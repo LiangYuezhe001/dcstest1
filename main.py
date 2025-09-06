@@ -1,289 +1,174 @@
 import time
 import sys
+import datetime  # 新增导入
+import csv
 from typing import Dict, Any, List, Tuple
 from dcs_object_manager import DCSObjectManager
 from distance_calculator import DistanceCalculator
 
 
-def print_separator():
-    """打印分隔线，增强输出可读性"""
-    print("\n" + "="*60)
-
-
-def format_position(pos: Dict[str, Any]) -> str:
-    """格式化位置信息以便显示"""
-    if not isinstance(pos, dict):
-        return "位置数据无效"
-    
-    return (f"X: {pos.get('x', '未知'):.2f}, "
-            f"Y: {pos.get('y', '未知'):.2f}, "
-            f"Z: {pos.get('z', '未知'):.2f}")
-
-
-def format_latlong(latlong: Dict[str, Any]) -> str:
-    """格式化经纬度信息以便显示"""
-    if not isinstance(latlong, dict):
-        return "经纬度数据无效"
-    
-    return (f"纬度: {latlong.get('Lat', '未知'):.6f}, "
-            f"经度: {latlong.get('Long', '未知'):.6f}, "
-            f"高度: {latlong.get('Alt', '未知'):.2f}")
-
-
 class DCSTracker:
-    """DCS物体跟踪器，支持计算两机之间的距离和相对速度"""
+    """简化的DCS物体跟踪器，优化响应速度并添加数据记录"""
     
-    def __init__(self):
-        # 初始化管理器
+    def __init__(self, log_file: str = "dcs_data.csv"):
         self.manager = DCSObjectManager(debug=False)
-        
-        # 跟踪状态
         self.selected_id = None
         self.selected_name = None
-        
-        # 用于计算速度的历史数据
-        self.prev_positions = {
-            'target': None,
-            'self': None,
-            'timestamp': None
-        }
-        
-        # 距离计算器实例
         self.distance_calculator = DistanceCalculator()
+        self.log_file = log_file
+        self._init_log_file()  # 初始化日志文件
+    
+    def _init_log_file(self):
+        """初始化CSV日志文件表头"""
+        with open(self.log_file, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'object_id', 'object_name',
+                'x', 'y', 'z',  # 位置数据
+                'heading', 'pitch', 'bank',  # 方向数据
+                'self_x', 'self_y', 'self_z',  # 自身位置
+                'distance_3d'  # 三维距离
+            ])
+    
+    def _get_timestamp(self) -> str:
+        """获取格式化时间戳（包含毫秒）"""
+        # 使用datetime模块，%f是微秒，[:-3]截取前三位作为毫秒
+        return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     
     def connect(self, host: str = "127.0.0.1", port: int = 7790) -> bool:
         """连接到DCS服务器"""
-        print("连接到DCS服务器...")
+        print(f"[{self._get_timestamp()}] 连接到 {host}:{port}...")
         return self.manager.connect()
     
     def fetch_all_objects(self) -> List[Dict[str, Any]]:
-        """获取所有物体信息"""
-        print_separator()
-        print("获取所有物体信息...")
-        all_objects = self.manager.fetch_all_objects(timeout=15.0)
-        
-        if not all_objects or not isinstance(all_objects, list):
-            return []
-        
-        # 筛选出有ID和名称的有效物体
+        """获取所有有效物体信息"""
+        print(f"[{self._get_timestamp()}] 获取物体列表...")
+        all_objects = self.manager.fetch_all_objects(timeout=5.0)
         return [
-            obj for obj in all_objects 
+            obj for obj in (all_objects or [])
             if isinstance(obj, dict) and 'id' in obj and 'Name' in obj
         ]
     
     def select_object(self, valid_objects: List[Dict[str, Any]]) -> bool:
-        """让用户选择要跟踪的物体"""
+        """简化的物体选择流程"""
         if not valid_objects:
             return False
-        
-        print_separator()
-        print("发现以下可跟踪物体：")
-        for i, obj in enumerate(valid_objects, 1):
+            
+        print("\n可跟踪物体:")
+        for i, obj in enumerate(valid_objects[:10], 1):  # 限制显示数量加快响应
             print(f"{i}. ID: {obj['id']}, 名称: {obj['Name']}")
         
-        # 获取用户选择
-        while True:
-            try:
-                choice = input("\n请输入要跟踪的物体编号 (输入0退出): ")
-                choice_idx = int(choice)
-                
-                if choice_idx == 0:
-                    print("程序退出")
-                    return False
-                
-                if 1 <= choice_idx <= len(valid_objects):
-                    selected_obj = valid_objects[choice_idx - 1]
-                    self.selected_id = selected_obj['id']
-                    self.selected_name = selected_obj['Name']
-                    print(f"已选择跟踪: ID={self.selected_id}, 名称={self.selected_name}")
-                    return True
-                else:
-                    print(f"请输入1到{len(valid_objects)}之间的数字")
-            except ValueError:
-                print("请输入有效的数字")
+        try:
+            choice = input("\n请输入跟踪编号 (0退出): ")
+            choice_idx = int(choice)
+            if choice_idx == 0:
+                return False
+            if 1 <= choice_idx <= len(valid_objects):
+                selected = valid_objects[choice_idx - 1]
+                self.selected_id = selected['id']
+                self.selected_name = selected['Name']
+                print(f"已选择: {self.selected_name} (ID: {self.selected_id})")
+                return True
+        except ValueError:
+            pass
+        return False
     
-    def calculate_relative_speed(self, current_positions: Dict[str, Dict[str, Any]]) -> Tuple[float, float]:
-        """
-        计算两机之间的相对速度
-        
-        参数:
-            current_positions: 包含目标和自身当前位置的字典
-            
-        返回:
-            相对速度元组 (三维空间相对速度, 水平相对速度)
-        """
-        # 获取当前时间戳
-        current_time = time.time()
-        
-        # 如果没有历史数据，初始化并返回0速度
-        if not self.prev_positions['timestamp']:
-            self.prev_positions = {
-                'target': current_positions['target'],
-                'self': current_positions['self'],
-                'timestamp': current_time
-            }
-            return (0.0, 0.0)
-        
-        # 计算时间差
-        time_diff = current_time - self.prev_positions['timestamp']
-        if time_diff <= 0:
-            return (0.0, 0.0)
-        
-        # 计算三维空间中的相对位移
-        distance_3d = self.distance_calculator.calculate_3d_distance(
-            current_positions['target'], 
-            self.prev_positions['target']
-        )
-        
-        # 计算水平面上的相对位移
-        distance_horizontal = self.distance_calculator.calculate_horizontal_distance(
-            current_positions['target'], 
-            self.prev_positions['target']
-        )
-        
-        # 计算相对自身的位移（目标位移减去自身位移）
-        self_distance_3d = self.distance_calculator.calculate_3d_distance(
-            current_positions['self'], 
-            self.prev_positions['self']
-        )
-        
-        relative_distance_3d = abs(distance_3d - self_distance_3d)
-        
-        # 计算速度 (距离/时间)
-        speed_3d = relative_distance_3d / time_diff
-        speed_horizontal = distance_horizontal / time_diff
-        
-        # 更新历史数据
-        self.prev_positions = {
-            'target': current_positions['target'],
-            'self': current_positions['self'],
-            'timestamp': current_time
-        }
-        
-        return (speed_3d, speed_horizontal)
-    
-    def start_monitoring(self, update_interval: float = 2.0):
-        """开始监控选定物体和自身信息，并计算距离和相对速度"""
+    def start_monitoring(self, update_interval: float = 0.1):
+        """简化监控流程，优化响应速度"""
         if not self.selected_id:
-            print("未选择要跟踪的物体")
+            print("未选择跟踪物体")
             return
         
-        # 存储最新的位置数据
-        latest_positions = {
-            'target': None,
-            'self': None
+        latest_data = {
+            'target': {'Position': {}, 'Heading': 0, 'Pitch': 0, 'Bank': 0},
+            'self': {'Position': {}}
         }
         
-        # 显示监控数据的回调函数
+        # 简化回调函数
         def on_object_updated(data: Dict[str, Any]):
-            if isinstance(data, dict) and data.get('id') == self.selected_id:
-                latest_positions['target'] = data.get('Position', {})
-                print_separator()
-                print(f"[物体更新] ID: {data.get('id')}, 名称: {data.get('Name', '未知')}")
-                print(f"  位置: {format_position(data.get('Position', {}))}")
-                print(f"  经纬度: {format_latlong(data.get('LatLongAlt', {}))}")
-                print(f"  航向: {data.get('Heading', '未知'):.4f}")
-                print(f"  俯仰角: {data.get('Pitch', '未知'):.4f}")
-                print(f"  坡度: {data.get('Bank', '未知'):.4f}")
-                
-                # 如果已有自身位置数据，计算距离
-                if latest_positions['self']:
-                    distance_3d = self.distance_calculator.calculate_3d_distance(
-                        latest_positions['target'], 
-                        latest_positions['self']
-                    )
-                    distance_horizontal = self.distance_calculator.calculate_horizontal_distance(
-                        latest_positions['target'], 
-                        latest_positions['self']
-                    )
-                    distance_vertical = self.distance_calculator.calculate_vertical_distance(
-                        latest_positions['target'], 
-                        latest_positions['self']
-                    )
-                    
-                    print(f"  与本机距离: 直线={distance_3d:.2f}, 水平={distance_horizontal:.2f}, 垂直={distance_vertical:.2f}")
+            if data.get('id') == self.selected_id:
+                latest_data['target'] = data
+                self._log_data(latest_data)  # 记录数据
+                # 简洁输出
+                ts = self._get_timestamp()
+                pos = data.get('Position', {})
+                print(f"[{ts}] 目标: {pos.get('x',0):.1f},{pos.get('y',0):.1f},{pos.get('z',0):.1f} "
+                      f"方向: H={data.get('Heading',0):.1f}, P={data.get('Pitch',0):.1f}")
         
         def on_self_updated(data: Dict[str, Any]):
-            if isinstance(data, dict):
-                latest_positions['self'] = data.get('Position', {})
-                print_separator()
-                print(f"[自身更新] 名称: {data.get('Name', '未知')}")
-                print(f"  位置: {format_position(data.get('Position', {}))}")
-                print(f"  经纬度: {format_latlong(data.get('LatLongAlt', {}))}")
-                print(f"  航向: {data.get('Heading', '未知'):.4f}")
-                print(f"  速度: {data.get('Velocity', '未知')}")
-                
-                # 如果已有目标位置数据，计算相对速度
-                if latest_positions['target']:
-                    # 计算相对速度
-                    speed_3d, speed_horizontal = self.calculate_relative_speed(latest_positions)
-                    print(f"  相对目标速度: 三维={speed_3d:.2f}/s, 水平={speed_horizontal:.2f}/s")
+            latest_data['self'] = data
         
         def on_error(message: str):
-            print_separator()
-            print(f"[错误] {message}")
+            print(f"[{self._get_timestamp()}] 错误: {message}")
         
         # 设置回调
         self.manager.set_callback('single_object', on_object_updated)
         self.manager.set_callback('self_data', on_self_updated)
         self.manager.set_callback('error', on_error)
         
-        # 启动监控
-        print_separator()
-        print("启动监控系统...")
-        print("正在获取初始数据...")
-        print("(按Ctrl+C停止监控)")
-        
-        # 先获取一次初始数据
-        self.manager.fetch_object(self.selected_id)
-        self.manager.fetch_self_data()
-        time.sleep(1)
-        
-        # 持续监控
+        print(f"[{self._get_timestamp()}] 开始监控 (间隔: {update_interval}s)")
         try:
             while True:
-                # 查询选定物体
                 self.manager.fetch_object(self.selected_id)
-                
-                # 查询自身信息
                 self.manager.fetch_self_data()
-                
-                # 等待下一次更新
                 time.sleep(update_interval)
         except KeyboardInterrupt:
-            print("\n用户中断监控")
+            print("\n监控已停止")
+    
+    def _log_data(self, data: Dict[str, Any]):
+        """将数据写入CSV文件"""
+        target = data['target']
+        self_data = data['self']
+        pos = target.get('Position', {})
+        self_pos = self_data.get('Position', {})
+        
+        # 计算三维距离
+        distance = self.distance_calculator.calculate_3d_distance(
+            pos, self_pos
+        )
+        
+        # 写入数据
+        with open(self.log_file, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                self._get_timestamp(),
+                self.selected_id,
+                self.selected_name,
+                self_pos.get('x', ''),
+                self_pos.get('y', ''),
+                self_pos.get('z', ''),
+                self_data.get('Heading', ''),
+                self_data.get('Pitch', ''),
+                self_data.get('Bank', ''),
+                self_pos.get('x', ''),
+                self_pos.get('y', ''),
+                self_pos.get('z', ''),
+                f"{distance:.2f}"
+            ])
     
     def disconnect(self):
-        """断开与服务器的连接"""
+        """断开连接"""
         self.manager.disconnect()
-        print_separator()
-        print("已断开与服务器的连接，程序退出")
+        print(f"[{self._get_timestamp()}] 已断开连接")
 
 
 def main():
     tracker = DCSTracker()
-    
     try:
-        # 连接服务器
         if not tracker.connect():
-            print("连接失败，程序退出")
+            print("连接失败")
             return
         
-        # 获取所有物体
         valid_objects = tracker.fetch_all_objects()
         if not valid_objects:
-            print("未找到有效的物体数据，程序退出")
+            print("未找到有效物体")
             return
         
-        # 选择跟踪物体
         if not tracker.select_object(valid_objects):
             return
         
-        # 开始监控
-        tracker.start_monitoring(update_interval=0.1)
+        tracker.start_monitoring(update_interval=0.1)  # 0.1秒间隔提升响应速度
     
-    except Exception as e:
-        print(f"发生错误: {str(e)}")
     finally:
         tracker.disconnect()
 

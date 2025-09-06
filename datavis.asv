@@ -1,0 +1,93 @@
+% 读取CSV数据
+data = readmatrix('dcs_data.csv');
+
+% 提取所需数据列
+z =- data(:,4);
+y = data(:,5);
+x = data(:,6);
+heading = data(:,7);
+pitch = data(:,8);
+addrads=0;
+addrads2=1.5708;
+% 三坐标归一化处理到[0, 1]范围
+x_min = min(x);
+x_max = max(x);
+y_min = min(y);
+y_max = max(y);
+z_min = min(z);
+z_max = max(z);
+
+x_norm = (x - x_min) / (x_max - x_min);
+y_norm = (y - y_min) / (y_max - y_min);
+z_norm = (z - z_min) / (z_max - z_min);
+
+% 目标坐标也进行归一化
+target_x = -315406.3;
+target_y = 10058.4;
+target_z = 785658.9;
+
+target_x_norm = (target_x - x_min) / (x_max - x_min);
+target_y_norm = (target_y - y_min) / (y_max - y_min);
+target_z_norm = (target_z - z_min) / (z_max - z_min);
+
+% 创建图形窗口
+figure('Name','归一化3D坐标与朝向可视化','Position',[100 100 1000 800]);
+
+% 绘制归一化的3D轨迹
+plot3(x_norm, y_norm, z_norm, 'b-', 'LineWidth', 1.5);
+hold on;
+grid on;
+axis equal;
+axis([0 1 0 1 0 1]);  % 设置归一化坐标范围
+
+% 绘制每个点的位置标记
+plot3(x_norm, y_norm, z_norm, 'ro', 'MarkerSize', 5, 'LineWidth', 1.5);
+
+% 绘制目标位置
+plot3(target_x_norm, target_y_norm, target_z_norm, 'gs', 'MarkerSize', 10, 'LineWidth', 2);
+
+
+% 计算方向向量并绘制朝向箭头（方向不进行归一化处理）
+step = 1;  % 可根据数据量调整
+% 箭头长度基于原始数据尺度（非归一化），根据实际数据范围调整
+arrowLength = 500;  % 原始坐标尺度下的箭头长度
+
+for i = 1:step:length(x)
+    % 方向向量计算基于原始弧度值，不进行归一化缩放
+    dx =  cos(heading(i)+addrads2);
+    dy = cos(pitch(i)+addrads) * sin(heading(i)+addrads2);
+    dz = sin(pitch(i)+addrads);                  % z方向分量（原始比例）
+    
+    % 将原始尺度的方向向量映射到归一化坐标中显示
+    % 计算方向向量在归一化空间中的缩放因子
+    scale_x = 1/(x_max - x_min);  % x方向归一化缩放因子
+    scale_y = 1/(y_max - y_min);  % y方向归一化缩放因子
+    scale_z = 1/(z_max - z_min);  % z方向归一化缩放因子
+    
+    % 转换方向向量到归一化坐标空间，保持原始方向比例
+    dx_norm = dx * arrowLength * scale_x;
+    dy_norm = dy * arrowLength * scale_y;
+    dz_norm = dz * arrowLength * scale_z;
+    
+    quiver3(x_norm(i), y_norm(i), z_norm(i), dx_norm, dy_norm, dz_norm, ...
+            'Color', 'g', 'LineWidth', 1.5, 'MaxHeadSize', 0.5);
+end
+
+% 添加标题和标签
+title('归一化目标3D轨迹与朝向可视化','FontSize',14);
+xlabel('归一化X坐标','FontSize',12);
+ylabel('归一化Y坐标','FontSize',12);
+zlabel('归一化Z坐标','FontSize',12);
+
+% 添加图例
+legend('轨迹','位置点','目标位置','朝向','Location','best');
+
+% 设置视角
+view(3);
+hold off;
+
+% 显示目标信息（包含原始坐标值）
+target_text = ['目标: x=' num2str(target_x) ', y=' num2str(target_y) ', z=' num2str(target_z) ...
+               ' 方向: H=' num2str(1.6) ', P=' num2str(0.1)];
+annotation('textbox', [0.05, 0.05, 0.4, 0.05], 'String', target_text, ...
+           'EdgeColor', 'none', 'FontSize', 10);
