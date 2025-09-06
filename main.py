@@ -1,188 +1,204 @@
 import time
-import threading
 import os
+import threading
+from typing import Any, Optional  # 从typing模块导入必要的类型提示
 from dcs_object_manager import DCSObjectManager
-from typing import List, Dict, Any
 
 
-def clear_screen() -> None:
+def clear_screen():
     """跨平台清屏函数"""
-    os.system('cls' if os.name == 'nt' else 'clear')
+   # os.system('cls' if os.name == 'nt' else 'clear')
 
 
-def format_type_info(type_dict: Any) -> str:
-    """格式化显示Type信息（处理字典类型）"""
-    if isinstance(type_dict, dict):
-        # 提取关键级别信息
-        levels = [f"level{i}:{type_dict.get(f'level{i}', '?')}" for i in range(1, 5) if f'level{i}' in type_dict]
-        return ", ".join(levels) if levels else "未知类型"
-    return str(type_dict)[:15]  # 限制长度
-
-
-def print_object_list(objects: List[Dict[str, Any]]) -> None:
-    """格式化显示物体列表（仅展示关键信息）"""
-    if not objects:
-        print("未获取到物体数据")
-        return
-    
-    # 打印表头
-    print("\n" + "="*80)
-    print(f"{'ID':<12} | {'名称':<20} | {'国家':<10} | {'类型':<25} | 位置概要")
-    print("-"*80)
-    
-    # 打印物体列表
-    for obj in objects:
-        obj_id = obj.get('id', '未知')
-        name = str(obj.get('Name', '未知'))[:20]  # 限制长度
-        country = obj.get('Country', '未知')
-        obj_type = format_type_info(obj.get('Type', '未知'))
-        position = obj.get('Position', {})
-        pos_summary = f"X:{position.get('x', 0):.1f}, Y:{position.get('y', 0):.1f}"
-        
-        print(f"{obj_id:<12} | {name:<20} | {country:<10} | {obj_type:<25} | {pos_summary}")
-    
-    print("="*80 + "\n")
-
-
-def track_object(manager: DCSObjectManager, target_id: int, interval: float = 2.0) -> None:
-    """跟踪指定ID的物体，定期更新信息"""
+def print_monitoring_data(manager: DCSObjectManager, target_id: int):
+    """打印监控数据的函数"""
     try:
-        print(f"\n开始跟踪物体ID={target_id}（按Ctrl+C停止跟踪）")
         while True:
-            # 获取最新数据
-            obj_data = manager.fetch_object_by_id(target_id, timeout=5.0)
+            clear_screen()
+            print("="*60)
+            print(f"正在监控 - 物体ID: {target_id} | 按Ctrl+C停止监控")
+            print("="*60)
             
-            if obj_data:
-                # 清屏（跨平台兼容）
-                clear_screen()
-                print(f"===== 物体跟踪 (ID={target_id}) =====")
-                print(f"名称: {obj_data.get('Name', '未知')}")
-                print(f"国家: {obj_data.get('Country', '未知')}")
-                print(f"联盟: {obj_data.get('Coalition', '未知')}")
-                print(f"类型: {format_type_info(obj_data.get('Type', '未知'))}")
+            # 获取并显示选定物体信息
+            print("\n【跟踪物体信息】")
+            target_data = manager.get_monitored_object(target_id)
+            if target_data:
+                print(f"ID: {target_data.get('id', '未知')}")
+                print(f"名称: {target_data.get('Name', '未知')}")
+                print(f"类型: {target_data.get('Type', '未知')}")
                 
-                # 位置信息
-                pos = obj_data.get('Position', {})
-                print(f"坐标: X={pos.get('x', 0):.2f}, Y={pos.get('y', 0):.2f}, Z={pos.get('z', 0):.2f}")
+                position = target_data.get('Position', {})
+                print(f"坐标: X={position.get('x', 0):.2f}, Y={position.get('y', 0):.2f}, Z={position.get('z', 0):.2f}")
                 
-                # 经纬度信息（匹配解析后的键名大写格式）
-                latlong = obj_data.get('LatLongAlt', {})
+                latlong = target_data.get('LatLongAlt', {})
                 print(f"经纬度: 纬度={latlong.get('Lat', 0):.6f}, 经度={latlong.get('Long', 0):.6f}")
                 print(f"高度: {latlong.get('Alt', 0):.2f}米")
-                
-                # 姿态信息
-                print(f"俯仰角: {obj_data.get('Pitch', 0):.6f}")
-                print(f"横滚角: {obj_data.get('Bank', 0):.6f}")
-                print(f"航向角: {obj_data.get('Heading', 0):.6f}")
-                
-                # 速度信息
-                velocity = obj_data.get('Velocity', [0, 0, 0])
-                if isinstance(velocity, list) and len(velocity) >= 3:
-                    print(f"速度: X={velocity[0]:.2f}, Y={velocity[1]:.2f}, Z={velocity[2]:.2f}")
-                
-                print(f"\n上次更新: {time.strftime('%H:%M:%S')}")
-                print("-------------------------------------")
-                print("按Ctrl+C返回物体列表")
             else:
-                print(f"无法获取物体ID={target_id}的最新数据，将重试...")
+                print("等待物体数据加载...")
             
-            time.sleep(interval)
+            # 获取并显示自身信息
+            print("\n【自身信息】")
+            self_data = manager.get_self_data()
+            if self_data:
+                print(f"ID: {self_data.get('id', '未知')}")
+                print(f"名称: {self_data.get('Name', '未知')}")
+                print(f"类型: {self_data.get('Type', '未知')}")
+                
+                position = self_data.get('Position', {})
+                print(f"坐标: X={position.get('x', 0):.2f}, Y={position.get('y', 0):.2f}, Z={position.get('z', 0):.2f}")
+                
+                latlong = self_data.get('LatLongAlt', {})
+                print(f"经纬度: 纬度={latlong.get('Lat', 0):.6f}, 经度={latlong.get('Long', 0):.6f}")
+                print(f"高度: {latlong.get('Alt', 0):.2f}米")
+            else:
+                print("等待自身数据加载...")
             
+            print("\n" + "="*60)
+            print(f"数据更新时间: {time.strftime('%H:%M:%S')}")
+            print("按Ctrl+C退出监控")
+            
+            time.sleep(1)  # 每秒刷新一次显示
     except KeyboardInterrupt:
-        print("\n已停止跟踪")
-    except Exception as e:
-        print(f"跟踪过程中发生错误: {str(e)}")
+        print("\n监控已停止")
 
 
-def get_object_ids(objects: List[Dict[str, Any]]) -> List[int]:
-    """提取所有物体的ID列表"""
-    ids = []
-    for obj in objects:
-        try:
-            obj_id = obj.get('id')
-            if obj_id and isinstance(obj_id, (int, str)):
-                ids.append(int(obj_id))
-        except (ValueError, TypeError):
-            continue
-    return ids
+def is_valid_object_id(obj_id: Any) -> bool:
+    """验证物体ID是否为有效的正整数"""
+    if obj_id is None:
+        return False
+    # 处理字符串形式的数字（如"123"）
+    if isinstance(obj_id, str):
+        return obj_id.isdigit()
+    # 处理整数类型
+    if isinstance(obj_id, int):
+        return obj_id > 0
+    # 其他类型（如float但实际是整数，如123.0）
+    if isinstance(obj_id, float):
+        return obj_id.is_integer() and obj_id > 0
+    return False
+
+
+def convert_to_int_id(obj_id: Any) -> Optional[int]:
+    """将有效格式的ID转换为整数类型"""
+    if not is_valid_object_id(obj_id):
+        return None
+    try:
+        return int(obj_id)
+    except (ValueError, TypeError):
+        return None
 
 
 def main():
     # 初始化管理器
+    print("初始化DCS物体管理器...")
     manager = DCSObjectManager(
-        host="127.0.0.1",
-        port=7790,
-        update_interval=5.0,
-        debug=False
+        batch_update_interval=5.0,
+        single_update_interval=1.0,
+        self_update_interval=1.0,
+        debug=True
     )
     
-    # 启动批量监控（在后台线程运行）
-    print("连接到DCS服务器并获取所有物体...")
-    if not manager.start_monitoring():
-        print("连接失败，退出程序")
+    # 连接到服务器
+    print("连接到DCS服务器...")
+    if not manager.connect():
+        print("无法连接到DCS服务器，程序将退出")
         return
     
     try:
-        # 等待第一批数据加载
-        print("等待物体数据加载（最多30秒）...")
-        start_time = time.time()
-        all_objects = []
-        while len(all_objects) == 0 and time.time() - start_time < 30:
-            all_objects = manager.get_all_objects()
-            if not all_objects:
-                time.sleep(1)
-                print(f"已等待 {int(time.time() - start_time)} 秒...")
+        # 单次获取所有物体的ID和名称
+        print("获取所有物体信息...")
+        all_objects = manager.fetch_all_objects(timeout=15.0)
         
-        if not all_objects:
+        if not all_objects or len(all_objects) == 0:
             print("未能获取到物体数据，程序将退出")
             return
         
-        # 获取并显示所有物体
-        print(f"共发现 {len(all_objects)} 个物体：")
-        print_object_list(all_objects)
-        object_ids = get_object_ids(all_objects)
-        print(f"可用物体ID: {', '.join(map(str, object_ids[:10]))}{'...' if len(object_ids) > 10 else ''}")
+        # 筛选并收集有效的物体ID（确保是正整数）
+        valid_objects = []
+        object_ids = []
+        for obj in all_objects:
+            obj_id = obj.get('id')
+            # 严格验证ID格式
+            if is_valid_object_id(obj_id):
+                int_id = convert_to_int_id(obj_id)
+                if int_id is not None:
+                    valid_objects.append({
+                        'id': int_id,
+                        'Name': obj.get('Name', '未知名称')
+                    })
+                    object_ids.append(int_id)
         
-        # 用户选择要跟踪的ID
-        while True:
+        # 检查是否有有效物体
+        if not valid_objects:
+            print("未发现有效的物体ID，程序将退出")
+            return
+        
+        # 显示所有有效物体的ID和名称
+        clear_screen()
+        print("="*60)
+        print("找到的所有有效物体:")
+        print("="*60)
+        print(f"{'ID':<10} | 名称")
+        print("-"*60)
+        for obj in valid_objects:
+            print(f"{str(obj['id']):<10} | {obj['Name']}")
+        
+        # 让用户选择要跟踪的物体ID（增强版验证）
+        print("\n" + "="*60)
+        target_id = None
+        while target_id is None:
             try:
-                num_input = input("请输入要跟踪的物体ID（输入0退出）: ")
-                if not num_input.strip():
-                    print("请输入有效的ID")
+                user_input = input("请输入要跟踪的物体ID（正整数）: ")
+                # 检查输入是否为空
+                if not user_input.strip():
+                    print("ID不能为空，请重新输入")
                     continue
-                    
-                target_id = int(num_input)
                 
-                if target_id == 0:
-                    break
+                # 尝试转换为整数
+                target_id = int(user_input.strip())
                 
-                # 验证ID是否存在
-                if target_id in object_ids:
-                    track_object(manager, target_id)
-                    # 跟踪结束后重新显示物体列表
-                    all_objects = manager.get_all_objects()
-                    object_ids = get_object_ids(all_objects)
-                    print(f"\n当前物体总数: {len(all_objects)}")
-                    print_object_list(all_objects)
-                    print(f"可用物体ID: {', '.join(map(str, object_ids[:10]))}{'...' if len(object_ids) > 10 else ''}")
-                else:
-                    print(f"未找到ID={target_id}的物体，请重新输入")
-                    print(f"可用物体ID: {', '.join(map(str, object_ids[:10]))}{'...' if len(object_ids) > 10 else ''}")
+                # 检查是否为正整数
+                if target_id <= 0:
+                    print("ID必须是正整数，请重新输入")
+                    target_id = None
+                    continue
+                
+                # 检查是否在有效ID列表中
+                if target_id not in object_ids:
+                    print(f"无效的ID: {target_id}，请从上面的列表中选择一个ID")
+                    print(f"ID列表： {object_ids},0")
+                    target_id = None
             
             except ValueError:
-                print("请输入有效的数字ID")
-            except Exception as e:
-                print(f"操作出错: {str(e)}")
-    
+                print("输入无效，请输入一个有效的正整数ID")
+        
+        # 启动监控
+        print(f"\n开始监控物体ID: {target_id} 和自身信息...")
+        manager.add_object_monitoring(int(target_id))
+        manager.start_self_monitoring()
+        
+        # 等待初始数据加载
+        print("等待初始数据加载...")
+        time.sleep(2)
+        
+        # 启动监控显示线程
+        monitoring_thread = threading.Thread(
+            target=print_monitoring_data,
+            args=(manager, target_id),
+            daemon=True
+        )
+        monitoring_thread.start()
+        
+        # 等待用户中断
+        monitoring_thread.join()
+        
     except KeyboardInterrupt:
         print("\n用户中断操作")
     finally:
-        # 清理资源
-        manager.stop_monitoring()
+        print("正在清理资源...")
         manager.disconnect()
         print("程序已退出")
 
 
 if __name__ == "__main__":
     main()
-    

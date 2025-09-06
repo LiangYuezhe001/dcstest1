@@ -25,14 +25,22 @@ def parse_single_object(
     first_line = lines[0].strip()
 
     # 检查首行是否为ID行（如 "16785664:"）
+       # 检查首行是否为ID行（如 "16785664:"）
     if first_line.endswith(':') and first_line.split(':')[0].isdigit():
         # 提取根ID（适用于LoGetWorldObjects格式）
-        root_id = first_line.split(':', 1)[0].strip()
+        root_id_str = first_line.split(':', 1)[0].strip()
+        try:
+            root_id = int(root_id_str)
+        except ValueError:
+            root_id = -1
+            error_handler(f"物体ID转换失败: {root_id_str}，设置为-1")
         result["id"] = root_id
         # 从第二行开始解析属性
         start_idx = 1 if len(lines) > 1 else 0
     else:
         # 无开头ID行（适用于LoGetObjectById格式）
+        # 在这种情况下，我们无法获取ID，所以设置为-1
+        result["id"] = -1
         start_idx = 0
 
     # 处理物体属性行
@@ -196,48 +204,88 @@ class DCSDataParser:
 if __name__ == "__main__":
     # 测试数据：LoGetObjectById格式（无开头ID行）
     test_data = """
-Pitch: 0.00074277498060837
-Type:
-    level3: 1
-    level1: 1
-    level4: 275
-    level2: 1
-Country: 2
-Flags:
-GroupName: Player
-PositionAsMatrix:
-    y:
-        y: 0.99999970197678
-        x: -0.00058460742002353
-        z: 0.99999970197678
-    x:
-        y: 0.00074280321132392
-        x: 0.89767533540726
-        z: 0.00074280321132392
-    p:
-        y: 5106.030996279
-        x: -244504.08167846
-        z: 5106.030996279
-    z:
-        y: -0.0001865144004114
-        x: 0.4406570494175
-        z: -0.0001865144004114
-Coalition: Enemies
-Heading: 5.8268548250198
-Name: F-16C_50
-Position:
-    y: 5106.030996279
-    x: -244504.08167846
-    z: 670183.18642734
-UnitName: ?????????
-LatLongAlt:
-    Long: 42.371586124113
-    Lat: 42.549983390301
-    Alt: 5106.030996279
-CoalitionID: 2
-Bank: 0.00018662192451302
-Velocity: [150.5, 0.0, -2.3]
-Distance: 3.2e+5
+16785664:
+	Pitch: 0.10096984356642
+	Type:
+		level3: 5
+		level1: 1
+		level4: 47
+		level2: 1
+	Country: 2
+	Flags:
+	GroupName: C-17 #002
+	PositionAsMatrix:
+		y:
+			y: 0.99490612745285
+			x: -0.062088575214148
+			z: 0.99490612745285
+		x:
+			y: 0.10080575942993
+			x: 0.61245423555374
+			z: 0.10080575942993
+		p:
+			y: 9448.8081045219
+			x: -307499.22200024
+			z: 9448.8081045219
+		z:
+			y: -4.2356550693512e-05
+			x: -0.78806394338608
+			z: -4.2356550693512e-05
+	Coalition: Enemies
+	Heading: 0.90765762329102
+	Name: C-17A
+	Position:
+		y: 9448.8081045219
+		x: -307499.22200024
+		z: 591204.79534245
+	UnitName: Pilot #006
+	LatLongAlt:
+		Long: 41.345542272884
+		Lat: 42.063150924973
+		Alt: 9448.8081045219
+	CoalitionID: 2
+	Bank: 4.2366038542241e-05
+16785920:
+	Pitch: 0.10506981611252
+	Type:
+		level3: 5
+		level1: 1
+		level4: 47
+		level2: 1
+	Country: 2
+	Flags:
+	GroupName: C-17 #003
+	PositionAsMatrix:
+		y:
+			y: 0.99446725845337
+			x: -0.10215710103512
+			z: 0.99446725845337
+		x:
+			y: 0.10488250106573
+			x: 0.95260643959045
+			z: 0.10488250106573
+		p:
+			y: 9448.7873458663
+			x: -268197.37937391
+			z: 9448.7873458663
+		z:
+			y: 0.0058636013418436
+			x: 0.28653931617737
+			z: 0.0058636013418436
+	Coalition: Enemies
+	Heading: 5.9925644397736
+	Name: C-17A
+	Position:
+		y: 9448.7873458663
+		x: -268197.37937391
+		z: 906742.53550017
+	UnitName: Pilot #007
+	LatLongAlt:
+		Long: 45.155208652132
+		Lat: 42.072475575128
+		Alt: 9448.7873458663
+	CoalitionID: 2
+	Bank: -0.0058585093356669
     """
     
     # 使用解析器
@@ -251,8 +299,10 @@ Distance: 3.2e+5
     
     # 验证关键属性（键名无冒号）
     if result:
-        parsed_object = result[0]
+        parsed_object = result[1]
         print("\n===== 关键属性验证 =====")
+        print(f"物体总数: {len(result)}")
+        print(f"物体ID (id): {parsed_object.get('id')}")
         print(f"俯仰角 (Pitch): {parsed_object.get('Pitch')}")
         print(f"类型 (Type 级别3): {parsed_object.get('Type', {}).get('level3')}")
         print(f"国家代码 (Country): {parsed_object.get('Country')}")
