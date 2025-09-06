@@ -1,375 +1,138 @@
-import logging
+"""
+简化版DCS API客户端（高性能优化版）
+保留核心结构，减少不必要的性能开销
+"""
+import threading
 import time
-from typing import Dict, Any, Optional, Callable, List
-from dcs_client import DCSClient
-from dcs_data_parser import DCSDataParser
-from dcs_api_parser import DCSAPI
+import logging
+from typing import Dict, Optional, Callable, Any
+from dcs_api_parser import DCSAPI, load_predefined_apis
+from dcs_network import DCSNetwork
+from dcs_command_processor import DCSCommandProcessor
+from dcs_event_handler import DCSEventHandler
+from dcs_data_processor import DCSDataProcessor
+from dcs_api_definitions import DCS_APIS
 
+# 配置日志（仅初始化一次，减少IO开销）
+if not logging.getLogger("DCSClient").handlers:
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("DCSClient")
 
-class DCSObjectManager:
-    """
-    DCS物体管理模块，全部使用单次查询方式
-    支持批量获取物体列表、单个物体查询和自身数据获取功能
-    """
+class DCSClient:
+    """简化版DCS客户端，专注于核心功能（性能优化）"""
     
-    def __init__(self,
-                 host: str = "127.0.0.1",
-                 port: int = 7790,
-                 debug: bool = False):
-        """
-        初始化物体管理器
-        :param host: DCS服务器地址
-        :param port: 连接端口
-        :param debug: 是否启用调试模式
-        """
-        # 配置日志
-        self.logger = self._setup_logger(debug)
+    def __init__(self, host: str = "127.0.0.1", port: int = 7777, log_level: int = logging.INFO):
+        # 基础配置（减少属性查找层级）
+        self.host = host
+        self.port = port
+        logger.setLevel(log_level)
         
-        # 核心组件
-        self.client = DCSClient(host, port, log_level=logging.WARNING)
-        self.parser = DCSDataParser()
-        self.debug = debug
+        # 核心子模块（保持原有结构）
+        self.network = DCSNetwork(host, port)
+        self.cmd_processor = DCSCommandProcessor()
+        self.event_handler = DCSEventHandler()
+        self.data_processor = DCSDataProcessor()
         
-        # 状态标志
-        self.connected = False
+        # 加载API定义并构建ID映射（O(1)查询优化）
+        self.api_list = load_predefined_apis(DCS_APIS)
+        self._api_id_map = {api.id: api for api in self.api_list}  # 替代线性查找
+        logger.info(f"已加载 {len(self.api_list)} 个API定义")
         
-        # 数据存储
-        self._all_objects: List[Dict[str, Any]] = []
-        self._cached_objects: Dict[int, Dict[str, Any]] = {}  # 缓存的单个物体数据
-        self._self_data: Optional[Dict[str, Any]] = None
+        # 状态管理（精简变量）
+        self._stop_event = threading.Event()
+        self._listener_thread: Optional[threading.Thread] = None
         
-        # 查询状态
-        self._pending_queries: set = set()  # 当前正在查询的物体ID
-        self._pending_self_query = False
-        
-        # 事件回调
-        self.callbacks = {
-            'all_objects': None,
-            'single_object': None,
-            'self_data': None,
-            'error': None
-        }
-        
-        # 初始化回调关系
+        # 初始化回调链（保持原有逻辑，减少中间调用）
         self._setup_callbacks()
-
-    def _setup_logger(self, debug: bool) -> logging.Logger:
-        """设置日志记录器"""
-        logger = logging.getLogger("DCSObjectManager")
-        logger.setLevel(logging.DEBUG if debug else logging.INFO)
-        
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        
-        return logger
-
+    
     def _setup_callbacks(self) -> None:
-        """设置回调函数"""
-        self.client.event_handler.on_connection_changed = self._on_connection_changed
-        self.client.event_handler.on_api_data_received = self._on_api_data_received
-        self.client.event_handler.on_error_received = self._on_error_received
-
-    def _on_connection_changed(self, connected: bool) -> None:
-        """处理连接状态变化"""
-        self.connected = connected
-        status = "已连接" if connected else "已断开"
-        self.logger.debug(f"与DCS服务器的连接{status}")
-
-    def _on_api_data_received(self, api: DCSAPI) -> None:
-        """处理API响应数据"""
-        try:
-            if api.id == 52 and api.result is not None:
-                self._handle_batch_data(api.result)
-            elif api.id == 10:
-                self._handle_single_data(api.result)
-            elif api.id == 17 and self._pending_self_query:
-                self._handle_self_data(api.result)
-        except Exception as e:
-            self._handle_error(f"处理API响应失败: {str(e)}")
-
-    def _handle_batch_data(self, raw_data: Any) -> None:
-        """处理批量获取的物体数据"""
-        try:
-            parsed_data = self.parser.parse_data(raw_data)
-            self._all_objects = parsed_data
-            
-            self.logger.debug(f"已更新物体列表，共{len(parsed_data)}个物体")
-            
-            if self.callbacks['all_objects']:
-                self.callbacks['all_objects'](parsed_data)
-        except Exception as e:
-            self._handle_error(f"批量数据解析失败: {str(e)}")
-
-    def _handle_single_data(self, raw_data: Any) -> None:
-        """处理单个物体查询的数据"""
-        try:
-            parsed_data = self.parser.parse_data(raw_data)
-            
-            if parsed_data and isinstance(parsed_data, list) and len(parsed_data) > 0:
-                object_data = parsed_data[0]
-                object_id = object_data.get('id')
-                
-                if object_id:
-                    # 更新缓存的物体数据
-                    self._cached_objects[object_id] = object_data
-                    
-                    # 如果是待处理的查询，标记为已完成
-                    if object_id in self._pending_queries:
-                        self._pending_queries.discard(object_id)
-                    
-                    self.logger.debug(f"物体ID={object_id}数据查询完成")
-                    
-                    if self.callbacks['single_object']:
-                        self.callbacks['single_object'](object_data)
-                else:
-                    self.logger.warning("解析的物体数据中没有ID字段")
-        except Exception as e:
-            self._handle_error(f"单个物体数据解析失败: {str(e)}")
-
-    def _handle_self_data(self, raw_data: Any) -> None:
-        """处理自身数据查询的响应"""
-        try:
-            parsed_data = self.parser.parse_data(raw_data)
-            
-            if parsed_data:
-                if isinstance(parsed_data, list) and len(parsed_data) > 0:
-                    self._self_data = parsed_data[0]
-                elif isinstance(parsed_data, dict):
-                    self._self_data = parsed_data
-                
-                self._pending_self_query = False
-                self.logger.debug("自身数据查询完成")
-                
-                if self.callbacks['self_data']:
-                    self.callbacks['self_data'](self._self_data)
-        except Exception as e:
-            self._handle_error(f"自身数据解析失败: {str(e)}")
-
-    def _on_error_received(self, error_type: str, message: str) -> None:
-        """处理错误信息"""
-        self._handle_error(f"{error_type}: {message}")
-
-    def _handle_error(self, message: str) -> None:
-        """错误处理"""
-        self.logger.error(message)
-        if self.callbacks['error']:
-            self.callbacks['error'](message)
-
-    def set_callback(self, event_type: str, callback: Callable) -> None:
-        """设置事件回调"""
-        if event_type in self.callbacks:
-            self.callbacks[event_type] = callback
-        else:
-            self._handle_error(f"未知的事件类型: {event_type}")
-
-    def fetch_all_objects(self, timeout: float = 10.0) -> Optional[List[Dict[str, Any]]]:
-        """查询所有物体数据"""
-        if not self.connected:
-            self._handle_error("未连接到DCS服务器")
-            return None
-        
-        try:
-            # 发送批量查询命令
-            self.client.send_command(52)
-            
-            # 等待结果
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                # 检查是否有新数据
-                if len(self._all_objects) > 0:
-                    return self._all_objects.copy()
-                time.sleep(0.1)
-            
-            self._handle_error(f"批量查询超时（{timeout}秒）")
-            return None
-            
-        except Exception as e:
-            self._handle_error(f"批量查询失败: {str(e)}")
-            return None
-
-    def get_all_objects(self) -> List[Dict[str, Any]]:
-        """获取所有物体数据"""
-        return self._all_objects.copy()
-
-    def fetch_object(self, object_id: int, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
-        """查询指定物体数据"""
-        if not isinstance(object_id, int) or object_id <= 0:
-            self._handle_error(f"无效的物体ID: {object_id}，必须是正整数")
-            return None
-            
-        if not self.connected:
-            self._handle_error("未连接到DCS服务器")
-            return None
-        
-        try:
-            # 标记为正在查询
-            self._pending_queries.add(object_id)
-            
-            # 发送单个查询命令
-            self.client.send_command(10, {"object_id": object_id})
-            
-            # 等待结果
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                # 检查查询是否完成
-                if object_id not in self._pending_queries:
-                    # 返回缓存的数据
-                    return self._cached_objects.get(object_id, {}).copy()
-                time.sleep(0.1)
-            
-            # 超时处理
-            self._handle_error(f"查询物体ID={object_id}超时（{timeout}秒）")
-            self._pending_queries.discard(object_id)
-            return None
-            
-        except Exception as e:
-            self._handle_error(f"查询物体失败: {str(e)}")
-            self._pending_queries.discard(object_id)
-            return None
-
-    def get_object(self, object_id: int) -> Optional[Dict[str, Any]]:
-        """获取缓存的物体数据"""
-        return self._cached_objects.get(object_id, {}).copy()
-
-    def fetch_self_data(self, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
-        """查询自身数据"""
-        if not self.connected:
-            self._handle_error("未连接到DCS服务器")
-            return None
-        
-        try:
-            # 标记为正在查询
-            self._pending_self_query = True
-            
-            # 发送自身数据查询命令
-            self.client.send_command(17)
-            
-            # 等待结果
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                # 检查查询是否完成
-                if not self._pending_self_query:
-                    return self._self_data.copy() if self._self_data else None
-                time.sleep(0.1)
-            
-            # 超时处理
-            self._handle_error(f"自身数据查询超时（{timeout}秒）")
-            self._pending_self_query = False
-            return None
-            
-        except Exception as e:
-            self._handle_error(f"自身数据查询失败: {str(e)}")
-            self._pending_self_query = False
-            return None
-
-    def get_self_data(self) -> Optional[Dict[str, Any]]:
-        """获取缓存的自身数据"""
-        return self._self_data.copy() if self._self_data else None
-
+        """设置模块间回调关系（直接绑定，减少层级）"""
+        self.network.data_received_callback = self.data_processor.handle_raw_data
+        self.data_processor.api_data_callback = self._on_api_response
+        self.data_processor.error_callback = self.event_handler.trigger_error_received
+        self.cmd_processor.send_data_callback = self.network.send_data
+    
+    def _on_api_response(self, api: DCSAPI) -> None:
+        """API响应处理（合并操作，减少函数调用）"""
+        self.event_handler.trigger_api_data_received(api)
+        self.cmd_processor.mark_response_received()
+    
     def connect(self) -> bool:
-        """连接到DCS服务器"""
-        if self.connected:
+        """连接到服务器（优化线程启动）"""
+        if self.network.connect():
+            self._stop_event.clear()
+            # 直接启动守护线程，减少属性设置开销
+            self._listener_thread = threading.Thread(
+                target=self.network.start_listening,
+                args=(self._stop_event,),
+                daemon=True
+            )
+            self._listener_thread.start()
+            self.event_handler.trigger_connection_changed(True)
             return True
-            
-        try:
-            self.connected = self.client.connect()
-            return self.connected
-        except Exception as e:
-            self._handle_error(f"连接服务器失败: {str(e)}")
-            return False
-
-    def disconnect(self) -> None:
-        """断开连接"""
-        self.client.disconnect()
-        self.connected = False
         
-        # 清空数据
-        self._all_objects = []
-        self._cached_objects = {}
-        self._self_data = None
-        self._pending_queries = set()
-        self._pending_self_query = False
+        self.event_handler.trigger_connection_changed(False)
+        return False
+    
+    def disconnect(self) -> None:
+        """断开连接（快速清理资源）"""
+        self._stop_event.set()
+        self.network.disconnect()
+        if self._listener_thread:
+            self._listener_thread.join(timeout=0.5)  # 缩短超时，加速退出
+            self._listener_thread = None  # 释放引用，帮助GC
+        self.event_handler.trigger_connection_changed(False)
+    
+    def send_command(self, api_id: int, params: Dict[str, Any] = None) -> bool:
+        """发送命令（优化API查找和参数处理）"""
+        if not self.is_connected:
+            logger.warning("未连接，无法发送命令")
+            return False
+        
+        # O(1)查找API（替代原线性查找）
+        api_def = self._api_id_map.get(api_id)
+        if not api_def:
+            logger.error(f"未找到API ID: {api_id}")
+            return False
+        
+        # 简化参数处理（默认空字典，减少条件判断）
+        params = params or {}
+        
+        # 减少对象创建开销（直接复用api_def属性）
+        return self.cmd_processor.queue_command(
+            DCSAPI(
+                id=api_def.id,
+                returns_data=api_def.returns_data,
+                api_syntax=api_def.api_syntax,
+                parameter_count=api_def.parameter_count,
+                parameter_defs=api_def.parameters
+            ),
+            params
+        )
+    
+    @property
+    def is_connected(self) -> bool:
+        """连接状态属性（直接返回，减少中间计算）"""
+        return self.network.is_connected
 
-
-# 调试主函数
+# 示例用法（保持兼容）
 if __name__ == "__main__":
-    # 初始化管理器
-    manager = DCSObjectManager(debug=True)
+    client = DCSClient("127.0.0.1", 7790, logging.DEBUG)
     
-    # 设置回调
-    def on_objects_updated(objects):
-        print(f"物体列表更新: {len(objects)}个物体")
+    # 简单回调
+    client.event_handler.on_connection_changed = lambda connected: print(f"连接状态: {connected}")
+    client.event_handler.on_api_data_received = lambda api: print(f"收到数据: {api.api_syntax}")
     
-    def on_object_updated(object_data):
-        print(f"物体更新: ID={object_data.get('id')}, 名称={object_data.get('Name', '未知')}")
-    
-    def on_self_updated(self_data):
-        print(f"自身数据更新: 名称={self_data.get('Name', '未知')}")
-    
-    def on_error(message):
-        print(f"错误: {message}")
-    
-    manager.set_callback('all_objects', on_objects_updated)
-    manager.set_callback('single_object', on_object_updated)
-    manager.set_callback('self_data', on_self_updated)
-    manager.set_callback('error', on_error)
-    
-    # 连接服务器
-    print("连接服务器...")
-    if not manager.connect():
+    if client.connect():
+        print("连接成功，发送测试命令...")
+        client.send_command(17)  # 发送LoGetSelfData命令
+        
+        try:
+            while client.is_connected:
+                time.sleep(0.1)  # 缩短等待间隔，减少响应延迟
+        except KeyboardInterrupt:
+            print("用户中断")
+        finally:
+            client.disconnect()
+    else:
         print("连接失败")
-        exit(1)
-    
-    try:
-        # 测试批量查询
-        print("测试批量查询...")
-        objects = manager.fetch_all_objects()
-        if objects:
-            print(f"获取到 {len(objects)} 个物体")
-            
-            # 显示前几个物体
-            for i, obj in enumerate(objects[:5]):
-                print(f"{i+1}. ID={obj.get('id')}, 名称={obj.get('Name', '未知')}")
-            
-            # 测试单个物体查询
-            if objects:
-                test_id = objects[0].get('id')
-                print(f"\n测试单个物体查询: ID={test_id}")
-                
-                obj_data = manager.fetch_object(test_id)
-                if obj_data:
-                    print(f"查询成功: 名称={obj_data.get('Name', '未知')}")
-                    print(f"位置: {obj_data.get('Position', {})}")
-                else:
-                    print("查询失败")
-                
-                # 测试自身数据查询
-                print("\n测试自身数据查询...")
-                self_data = manager.fetch_self_data()
-                if self_data:
-                    print(f"自身数据查询成功: 名称={self_data.get('Name', '未知')}")
-                    print(f"位置: {self_data.get('Position', {})}")
-                else:
-                    print("自身数据查询失败")
-                
-                # 测试获取缓存数据
-                print(f"\n测试获取缓存数据: ID={test_id}")
-                cached_data = manager.get_object(test_id)
-                if cached_data:
-                    print(f"缓存数据: 名称={cached_data.get('Name', '未知')}")
-                else:
-                    print("无缓存数据")
-                    
-        else:
-            print("批量查询失败")
-            
-    except KeyboardInterrupt:
-        print("\n用户中断")
-    except Exception as e:
-        print(f"发生错误: {e}")
-    finally:
-        manager.disconnect()
-        print("已断开连接")
