@@ -236,7 +236,7 @@ if __name__ == "__main__":
                 print("查询结果：")
                 print(f"ID: {obj_data.get('id')}")
                 print(f"名称: {obj_data.get('Name', '未知')}")
-                print(f"国家: {obj_data.get('Country', '未知')}")
+                print(f"Country: {obj_data.get('Country', '未知')}")
                 print(f"位置: {obj_data.get('Position', {})}")
                 print(f"经纬度: {obj_data.get('LatLongAlt', {})}")
         else:

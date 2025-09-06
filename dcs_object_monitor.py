@@ -119,7 +119,7 @@ if __name__ == "__main__":
             if objects:
                 print(f"\n当前物体数量: {len(objects)}")
                 # 打印第一个物体的简要信息
-                print(f"首个物体: ID={objects[0]['id']}, 名称={objects[0].get('Name', '未知')}")
+                print(f"首个物体: ID={objects[0]['id']}, 名称={objects[0].get('Name', '未知')},名称={objects[0].get('Name', '未知')}")
             time.sleep(2)
     except KeyboardInterrupt:
         monitor.stop()
