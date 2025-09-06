@@ -206,7 +206,7 @@ class DCSObjectManager:
         else:
             self._handle_error(f"未知的事件类型: {event_type}")
 
-    def fetch_all_objects(self, timeout: float = 10.0) -> Optional[List[Dict[str, Any]]]:
+    def fetch_all_objects(self, timeout: float = 1) -> Optional[List[Dict[str, Any]]]:
         """查询所有物体数据"""
         if not self.connected:
             self._handle_error("未连接到DCS服务器")
@@ -219,7 +219,7 @@ class DCSObjectManager:
             while time.time() - start_time < timeout:
                 if len(self._all_objects) > 0:
                     return self._all_objects.copy()
-                time.sleep(0.1)
+                time.sleep(0.01)
             
             self._handle_error(f"批量查询超时（{timeout}秒）")
             return None
@@ -232,7 +232,7 @@ class DCSObjectManager:
         """获取所有物体数据"""
         return self._all_objects.copy()
 
-    def fetch_object(self, object_id: int, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+    def fetch_object(self, object_id: int, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
         """查询指定物体数据"""
         if not isinstance(object_id, int) or object_id <= 0:
             self._handle_error(f"无效的物体ID: {object_id}，必须是正整数")
@@ -250,7 +250,7 @@ class DCSObjectManager:
             while time.time() - start_time < timeout:
                 if object_id not in self._pending_queries:
                     return self._cached_objects.get(object_id, {}).copy()
-                time.sleep(0.1)
+                time.sleep(0.01)
             
             self._handle_error(f"查询物体ID={object_id}超时（{timeout}秒）")
             if object_id in self._pending_queries:
@@ -267,7 +267,7 @@ class DCSObjectManager:
         """获取缓存的物体数据"""
         return self._cached_objects.get(object_id, {}).copy()
 
-    def fetch_self_data(self, timeout: float = 10.0) -> Optional[Dict[str, Any]]:
+    def fetch_self_data(self, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
         """查询自身数据"""
         if not self.connected:
             self._handle_error("未连接到DCS服务器")

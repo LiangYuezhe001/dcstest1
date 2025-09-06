@@ -280,7 +280,7 @@ def main():
             return
         
         # 开始监控
-        tracker.start_monitoring(update_interval=2.0)
+        tracker.start_monitoring(update_interval=0.1)
     
     except Exception as e:
         print(f"发生错误: {str(e)}")
