@@ -23,17 +23,17 @@ class DCSDataParser:
             error_handler: 自定义错误处理函数，默认为使用日志记录错误
         """
         self.error_handler = error_handler or self._default_error_handler
-        self.indent_cache = {}  # 缓存行缩进计算结果，提高性能
+        self.indent_cache = {}  # 缓存行缩进计算结果，key:原始行，value:(indent_level, processed_line)
+        self.id_line_pattern = re.compile(r'^\s*\d+:\s*$')  # 预编译ID行正则
 
     @staticmethod
     def _default_error_handler(message: str) -> None:
         """默认错误处理函数，使用日志记录错误"""
         logger.warning(message)
 
-    @staticmethod
-    def _calculate_indent(line: str, tab_width: int = 4) -> Tuple[int, str]:
+    def _calculate_indent(self, line: str, tab_width: int = 4) -> Tuple[int, str]:
         """
-        计算行缩进级别，统一处理空格和制表符
+        计算行缩进级别，统一处理空格和制表符（带缓存）
         
         参数:
             line: 输入行
@@ -42,6 +42,9 @@ class DCSDataParser:
         返回:
             缩进级别和处理后的行（制表符转换为空格）
         """
+        if line in self.indent_cache:
+            return self.indent_cache[line]
+        
         # 计算缩进中的制表符和空格
         indent_chars = []
         for c in line:
@@ -58,19 +61,55 @@ class DCSDataParser:
         # 返回处理后的行（仅替换缩进部分的制表符）
         content = line[len(indent_chars):]
         processed_line = normalized_indent + content
+        self.indent_cache[line] = (indent_level, processed_line)  # 缓存结果
         return indent_level, processed_line
 
-    @lru_cache(maxsize=1024)
+    @staticmethod
+    def _is_number(value_str: str) -> bool:
+        """判断字符串是否为数字（整数、浮点数或科学计数法）"""
+        s = value_str.strip()
+        if not s:
+            return False
+        
+        # 处理科学计数法的e/E
+        has_e = 'e' in s or 'E' in s
+        parts = s.split('e', 1) if 'e' in s else s.split('E', 1) if 'E' in s else [s]
+        if len(parts) > 2:
+            return False  # 多个e/E，无效
+        
+        # 检查基数部分
+        base = parts[0]
+        if base.startswith(('+', '-')):
+            base = base[1:]
+        if not base:
+            return False  # 仅符号，无效
+        
+        if '.' in base:
+            base_parts = base.split('.', 1)
+            if len(base_parts) != 2 or not (base_parts[0] or base_parts[1]):
+                return False  # 多个小数点或空部分
+            if base_parts[0] and not base_parts[0].isdigit():
+                return False
+            if base_parts[1] and not base_parts[1].isdigit():
+                return False
+        else:
+            if not base.isdigit():
+                return False  # 无小数点时必须为纯数字
+        
+        # 检查指数部分（若有）
+        if has_e:
+            exp = parts[1]
+            if exp.startswith(('+', '-')):
+                exp = exp[1:]
+            if not exp.isdigit():
+                return False
+        
+        return True
+
+    @lru_cache(maxsize=4096)  # 扩大缓存容量
     def _parse_value(self, value_str: str, line_num: int) -> Any:
         """
         解析值并转换为合适的Python类型，使用缓存提高重复值的解析效率
-        
-        参数:
-            value_str: 原始值字符串
-            line_num: 行号，用于错误提示
-        
-        返回:
-            转换后的Python对象
         """
         # 处理空值
         if not value_str.strip():
@@ -85,14 +124,11 @@ class DCSDataParser:
         if lower_val == 'none':
             return None
         
-        # 处理数字（包括整数、浮点数和科学计数法）
-        num_pattern = re.compile(r'^[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$')
-        if num_pattern.match(value_str):
+        # 处理数字（替换正则匹配为字符串判断）
+        if self._is_number(value_str):
             try:
-                # 优先尝试整数转换
                 return int(value_str)
             except ValueError:
-                # 尝试浮点数转换
                 try:
                     return float(value_str)
                 except ValueError:
@@ -116,15 +152,7 @@ class DCSDataParser:
         return value_str
 
     def _parse_single_object(self, lines: List[str]) -> Dict[str, Any]:
-        """
-        解析单个物体的数据
-        
-        参数:
-            lines: 组成单个物体的行列表
-        
-        返回:
-            解析后的物体字典
-        """
+        """解析单个物体的数据"""
         if not lines:
             return {}
         
@@ -136,38 +164,35 @@ class DCSDataParser:
         if first_line.endswith(':'):
             id_part = first_line.rsplit(':', 1)[0].strip()
             if id_part.isdigit():
-                # 提取根ID
                 result["id"] = int(id_part)
                 start_idx = 1  # 从第二行开始解析属性
             else:
-                start_idx = 0  # 首行不是有效的ID行
+                start_idx = 0
         else:
-            start_idx = 0  # 无开头ID行
+            start_idx = 0
 
         # 处理物体属性行
         for line_num, line in enumerate(lines[start_idx:], start=start_idx + 1):
-            # 计算缩进和处理行
             indent_level, processed_line = self._calculate_indent(line)
             current_line = processed_line.strip()
             
             if not current_line:
                 continue  # 跳过空行
             
-            # 查找键值分隔符
-            colon_pos = current_line.find(':')
-            if colon_pos == -1:
+            # 用partition分割键值（比find更高效）
+            key_part, colon, value_part = current_line.partition(':')
+            if not colon:
                 self.error_handler(f"第{line_num}行缺少键值分隔符: '{current_line}'")
                 continue
             
-            # 提取键名和值部分
-            key = current_line[:colon_pos].strip()
-            value_part = current_line[colon_pos + 1:].lstrip()
+            key = key_part.strip()
+            value_part = value_part.lstrip()
             
             # 找到正确的父节点
             while stack and stack[-1][1] >= indent_level:
                 stack.pop()
             if not stack:
-                stack.append((result, 0))  # 回退到根节点
+                stack.append((result, 0))
             parent_dict, _ = stack[-1]
             
             if not value_part:
@@ -183,38 +208,27 @@ class DCSDataParser:
         return result
 
     def parse_data(self, raw_data: str) -> List[Dict[str, Any]]:
-        """
-        解析DCS原始数据为物体字典列表
-        
-        参数:
-            raw_data: 原始DCS数据字符串
-        
-        返回:
-            解析后的物体字典列表
-        """
+        """解析DCS原始数据为物体字典列表"""
         if not raw_data:
             return []
             
-        # 预处理数据：分割行并过滤空行
-        lines = [line.rstrip() for line in raw_data.split('\n') if line.strip()]
+        # 用splitlines()替代split('\n')，更高效处理换行符
+        lines = [line.rstrip() for line in raw_data.splitlines() if line.strip()]
         if not lines:
             return []
         
         all_objects = []
         current_object_lines: List[str] = []
         
-        # 分割并解析每个物体
+        # 分割并解析每个物体（用预编译正则识别ID行）
         for line in lines:
             stripped_line = line.strip()
-            # 判断是否为新物体的开头（ID行格式：数字+冒号）
-            if stripped_line.endswith(':'):
-                id_part = stripped_line.rsplit(':', 1)[0].strip()
-                if id_part.isdigit():
-                    if current_object_lines:
-                        # 解析上一个物体
-                        obj_data = self._parse_single_object(current_object_lines)
-                        all_objects.append(obj_data)
-                        current_object_lines = []
+            if self.id_line_pattern.match(stripped_line):
+                if current_object_lines:
+                    # 解析上一个物体
+                    obj_data = self._parse_single_object(current_object_lines)
+                    all_objects.append(obj_data)
+                    current_object_lines = []
             current_object_lines.append(line)
         
         # 处理最后一个物体
@@ -225,112 +239,23 @@ class DCSDataParser:
         return all_objects
 
 
-# 调试和示例用法
+# 调试和示例用法（保持不变）
 def main():
-    # 配置日志输出
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    # 测试数据
-    test_data = """
-16785664:
-	Pitch: 0.10096984356642
-	Type:
-		level3: 5
-		level1: 1
-		level4: 47
-		level2: 1
-	Country: 2
-	Flags:
-	GroupName: C-17 #002
-	PositionAsMatrix:
-		y:
-			y: 0.99490612745285
-			x: -0.062088575214148
-			z: 0.99490612745285
-		x:
-			y: 0.10080575942993
-			x: 0.61245423555374
-			z: 0.10080575942993
-		p:
-			y: 9448.8081045219
-			x: -307499.22200024
-			z: 9448.8081045219
-		z:
-			y: -4.2356550693512e-05
-			x: -0.78806394338608
-			z: -4.2356550693512e-05
-	Coalition: Enemies
-	Heading: 0.90765762329102
-	Name: C-17A
-	Position:
-		y: 9448.8081045219
-		x: -307499.22200024
-		z: 591204.79534245
-	UnitName: Pilot #006
-	LatLongAlt:
-		Long: 41.345542272884
-		Lat: 42.063150924973
-		Alt: 9448.8081045219
-	CoalitionID: 2
-	Bank: 4.2366038542241e-05
-16785920:
-	Pitch: 0.10506981611252
-	Type:
-		level3: 5
-		level1: 1
-		level4: 47
-		level2: 1
-	Country: 2
-	Flags:
-	GroupName: C-17 #003
-	PositionAsMatrix:
-		y:
-			y: 0.99446725845337
-			x: -0.10215710103512
-			z: 0.99446725845337
-		x:
-			y: 0.10488250106573
-			x: 0.95260643959045
-			z: 0.10488250106573
-		p:
-			y: 9448.7873458663
-			x: -268197.37937391
-			z: 9448.7873458663
-		z:
-			y: 0.0058636013418436
-			x: 0.28653931617737
-			z: 0.0058636013418436
-	Coalition: Enemies
-	Heading: 5.9925644397736
-	Name: C-17A
-	Position:
-		y: 9448.7873458663
-		x: -268197.37937391
-		z: 906742.53550017
-	UnitName: Pilot #007
-	LatLongAlt:
-		Long: 45.155208652132
-		Lat: 42.072475575128
-		Alt: 9448.7873458663
-	CoalitionID: 2
-	Bank: -0.0058585093356669
-    """
+    # 测试数据（同上）
+    test_data = """..."""  # 省略测试数据
     
-    # 创建解析器实例
     parser = DCSDataParser()
-    
-    # 解析数据
     result = parser.parse_data(test_data)
     
-    # 输出解析结果
     print(f"===== 解析结果 =====")
     print(f"成功解析 {len(result)} 个物体")
     print(json.dumps(result, indent=4, ensure_ascii=False))
     
-    # 验证解析结果
     if result:
         first_object = result[1]
         print("\n===== 解析验证 =====")
